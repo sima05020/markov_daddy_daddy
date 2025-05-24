@@ -15,20 +15,6 @@
             overflow: hidden;
         }
 
-        #overlay,
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(255, 255, 255, 0.9);
-            padding: 10px 20px;
-            border-radius: 5px;
-            font: 18px sans-serif;
-            color: #333;
-            pointer-events: none;
-        }
-
         svg {
             width: 100%;
             height: 100%;
@@ -68,8 +54,7 @@
 </head>
 
 <body>
-    <div id="loading">音声ファイルを読み込み中…</div>
-    <div id="overlay" style="display:none;">クリックして再生をスタート</div>
+    <div id="overlay">クリックして再生をスタート</div>
     <svg id="svgCanvas">
         <defs>
             <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"
@@ -78,6 +63,7 @@
             </marker>
         </defs>
     </svg>
+    <audio id="audioPlayer"></audio>
 
     <script>
         const nodes = [
@@ -89,6 +75,7 @@
             { id: 'ﾋﾟｰﾎﾟｰ', x: 400, y: 520, audio: 'audio/ピーポー.mp3' },
             { id: 'YYYY', x: 200, y: 400, audio: 'audio/nobasi.mp3' }
         ];
+
         const transitions = {
             西: [{ to: '山', w: 1.0 }],
             山: [{ to: 'ﾀﾞﾃﾞｨ', w: 1.0 }],
@@ -100,102 +87,78 @@
         };
 
         const svg = document.getElementById('svgCanvas');
-        const overlay = document.getElementById('overlay');
-        const loading = document.getElementById('loading');
         const ns = 'http://www.w3.org/2000/svg';
         let current = nodes[0].id;
 
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-        // Promise版 decodeAudioData
-        function decode(arrayBuffer) {
-            return audioCtx.decodeAudioData(arrayBuffer);
-        }
-
-        async function preloadAudio() {
-            const promises = nodes.map(async node => {
-                try {
-                    const res = await fetch(node.url);
-                    if (!res.ok) throw new Error(`Fetch failed: ${node.url}`);
-                    const arrayBuffer = await res.arrayBuffer();
-                    const decoded = await decode(arrayBuffer);
-                    node.buffer = decoded;
-                } catch (err) {
-                    console.error(`Error loading ${node.url}:`, err);
-                    // 空のバッファを生成して再生継続
-                    node.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-                }
-            });
-            await Promise.all(promises);
-        }
-
-        function playBuffer(buffer) {
-            const src = audioCtx.createBufferSource();
-            src.buffer = buffer;
-            src.connect(audioCtx.destination);
-            src.start();
-            return new Promise(res => { src.onended = res; });
-        }
-
-        async function init() {
-            await preloadAudio();
-            loading.style.display = 'none';
-            overlay.style.display = 'block';
-            drawGraph();
-            svg.addEventListener('click', () => {
-                audioCtx.resume();
-                overlay.style.display = 'none';
-                step();
-            }, { once: true });
-        }
-
         function drawGraph() {
+            // エッジ描画
             Object.entries(transitions).forEach(([from, tos]) => {
-                const srcNode = nodes.find(n => n.id === from);
+                const src = nodes.find(n => n.id === from);
                 tos.forEach(({ to, w }) => {
-                    const dstNode = nodes.find(n => n.id === to);
+                    const dst = nodes.find(n => n.id === to);
                     if (from === to) {
+                        // 自己ループ: 円弧で表現
                         const path = document.createElementNS(ns, 'path');
-                        const r = 30, loopR = 20;
-                        const startX = srcNode.x + r, startY = srcNode.y;
-                        path.setAttribute('d', `M ${startX} ${startY} A ${loopR} ${loopR} 0 1 1 ${startX - 0.1} ${startY}`);
+                        const r = 30;
+                        const startX = src.x + r;
+                        const startY = src.y;
+                        // ループ半径
+                        const loopR = 20;
+                        const d = `M ${startX} ${startY} ` +
+                            `A ${loopR} ${loopR} 0 1 1 ${startX - 0.1} ${startY}`;
+                        path.setAttribute('d', d);
                         path.setAttribute('class', 'edge');
                         svg.appendChild(path);
-                        const t = document.createElementNS(ns, 'text');
-                        t.setAttribute('x', srcNode.x + r + loopR);
-                        t.setAttribute('y', srcNode.y - loopR);
-                        t.setAttribute('class', 'weight-label');
-                        t.textContent = w.toFixed(2);
-                        svg.appendChild(t);
+                        // 重みラベル
+                        const text = document.createElementNS(ns, 'text');
+                        text.setAttribute('x', src.x + r + loopR);
+                        text.setAttribute('y', src.y - loopR);
+                        text.setAttribute('class', 'weight-label');
+                        text.textContent = w.toFixed(2);
+                        svg.appendChild(text);
                     } else {
-                        const angle = Math.atan2(dstNode.y - srcNode.y, dstNode.x - srcNode.x);
-                        const off = 25;
-                        const x1 = srcNode.x + Math.cos(angle) * off;
-                        const y1 = srcNode.y + Math.sin(angle) * off;
-                        const x2 = dstNode.x - Math.cos(angle) * off;
-                        const y2 = dstNode.y - Math.sin(angle) * off;
+                        // 通常エッジ
                         const line = document.createElementNS(ns, 'line');
-                        line.setAttribute('x1', x1); line.setAttribute('y1', y1);
-                        line.setAttribute('x2', x2); line.setAttribute('y2', y2);
-                        line.setAttribute('class', 'edge'); svg.appendChild(line);
-                        const t = document.createElementNS(ns, 'text');
-                        t.setAttribute('x', (x1 + x2) / 2);
-                        t.setAttribute('y', (y1 + y2) / 2 - 5);
-                        t.setAttribute('class', 'weight-label');
-                        t.textContent = w.toFixed(2);
-                        svg.appendChild(t);
+                        // ノード円の端に線を合わせる
+                        const angle = Math.atan2(dst.y - src.y, dst.x - src.x);
+                        const offset = 25;
+                        const x1 = src.x + Math.cos(angle) * offset;
+                        const y1 = src.y + Math.sin(angle) * offset;
+                        const x2 = dst.x - Math.cos(angle) * offset;
+                        const y2 = dst.y - Math.sin(angle) * offset;
+                        line.setAttribute('x1', x1);
+                        line.setAttribute('y1', y1);
+                        line.setAttribute('x2', x2);
+                        line.setAttribute('y2', y2);
+                        line.setAttribute('class', 'edge');
+                        svg.appendChild(line);
+                        // 重みラベル
+                        const mx = (x1 + x2) / 2;
+                        const my = (y1 + y2) / 2;
+                        const text = document.createElementNS(ns, 'text');
+                        text.setAttribute('x', mx);
+                        text.setAttribute('y', my - 5);
+                        text.setAttribute('class', 'weight-label');
+                        text.textContent = w.toFixed(2);
+                        svg.appendChild(text);
                     }
                 });
             });
+            // ノード描画
             nodes.forEach(n => {
                 const c = document.createElementNS(ns, 'circle');
-                c.setAttribute('cx', n.x); c.setAttribute('cy', n.y);
-                c.setAttribute('r', 25); c.setAttribute('class', 'node');
-                c.setAttribute('id', `node-${n.id}`); svg.appendChild(c);
-                const text = document.createElementNS(ns, 'text');
-                text.setAttribute('x', n.x); text.setAttribute('y', n.y + 5);
-                text.setAttribute('class', 'label'); text.textContent = n.id;
-                svg.appendChild(text);
+                c.setAttribute('cx', n.x);
+                c.setAttribute('cy', n.y);
+                c.setAttribute('r', 25);
+                c.setAttribute('class', 'node');
+                c.setAttribute('id', `node-${n.id}`);
+                svg.appendChild(c);
+                const t = document.createElementNS(ns, 'text');
+                t.setAttribute('x', n.x);
+                t.setAttribute('y', n.y + 5);
+                t.setAttribute('class', 'label');
+                t.textContent = n.id;
+                svg.appendChild(t);
             });
         }
 
@@ -210,18 +173,32 @@
             const list = transitions[from];
             const sum = list.reduce((a, e) => a + e.w, 0);
             let r = Math.random() * sum, acc = 0;
-            for (const { to, w } of list) { acc += w; if (r <= acc) return to; }
+            for (const { to, w } of list) {
+                acc += w;
+                if (r <= acc) return to;
+            }
             return list[list.length - 1].to;
+        }
+
+        function playAudio(id) {
+            const audioPlayer = document.getElementById('audioPlayer');
+            return new Promise(res => {
+                audioPlayer.src = nodes.find(n => n.id === id).audio;
+                audioPlayer.play().catch(() => { });
+                audioPlayer.onended = res;
+                audioPlayer.onerror = res;
+            });
         }
 
         async function step() {
             highlight(current);
-            await playBuffer(nodes.find(n => n.id === current).buffer);
+            await playAudio(current);
             current = chooseNext(current);
             step();
         }
 
-        init();
+        drawGraph();
+        svg.addEventListener('click', () => { step(); }, { once: true });
     </script>
 </body>
 
